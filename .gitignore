@@ -2,7 +2,12 @@
 *.o
 *.a
 *.so
-
+*.idea
+*DS_Store
+.gitignore
+.DS_Store
+.idea
+*gitignore
 # Folders
 _obj
 _test
