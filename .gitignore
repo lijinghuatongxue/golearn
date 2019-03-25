@@ -12,7 +12,7 @@
 _obj
 _test
 
-# Architecture specific extensions/prefixes
+#  Architecture specific extensions/prefixes
 *.[568vq]
 [568vq].out
 
