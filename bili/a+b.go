@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"time"
 	_"time"
 )
 func add(a int,b int)int{
