@@ -10,7 +10,12 @@ func calc(a int , b int)(int,int){
 	// 用逗号隔开
 	return c ,d
 }
-func main(){
+/*func main(){
 	sum,avg := calc(100,200)
 	fmt.Println("sum=", sum, "avg=", avg)
+}*/
+// 忽略单个返回值
+func main(){
+	sum,_ := calc(100,200)
+	fmt.Println("sum=", sum)
 }
