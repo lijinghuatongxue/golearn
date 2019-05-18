@@ -6,7 +6,7 @@ import (
 	_"time"
 )
 
-var pipe chan int
+//var pipe chan int
 func add(a int,b int,c chan int){
 	var sum int
 	sum = a+b
