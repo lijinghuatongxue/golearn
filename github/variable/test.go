@@ -22,10 +22,13 @@ var (
 	key = "asd"
 )
 
+var e, c int = 1,2
+
 
 
 func main()  {
 	fmt.Println(a,err,stat,key)
+	fmt.Println(e,c)
     // 获取操作系统
 	var goos string = runtime.GOOS
 	fmt.Printf("The operating system is: %s\n", goos)
