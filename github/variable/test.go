@@ -30,6 +30,7 @@ func main()  {
 	var goos string = runtime.GOOS
 	fmt.Printf("The operating system is: %s\n", goos)
 	//这种写法主要用于声明包级别的全局变量，当你在函数体内声明局部变量时，应使用简短声明语法 :=
+	//通过 os 包中的函数 os.Getenv() 来获取环境变量中的值
 	path := os.Getenv("PATH")
 	fmt.Printf("Path is %s\n", path)
 }
