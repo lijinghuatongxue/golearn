@@ -25,6 +25,7 @@ func main()  {
 	week_from_now := t.Add(time.Duration(week))
 	fmt.Println(week_from_now)
 
+
 	// +++++++++++++++++++++++++++ 英文月份转int ++++++++++++++++++++++++
 	year, month, day := time.Now().Date()
 	fmt.Println(year, month, day)
