@@ -22,4 +22,5 @@ func main() {
 	i, err := strconv.Atoi(orig2)
 	if err != nil{
 		fmt.Println("err！！",i+1)
-		}}
+		}
+}
