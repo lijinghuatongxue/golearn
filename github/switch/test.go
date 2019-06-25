@@ -20,6 +20,9 @@ func main()  {
 		fmt.Println("等于100")
 	case test2 < 100:
 		fmt.Println("小于100")
+		// 有顺序，只会出第一个
+	case test2 < 1000 && test2 >10:
+		fmt.Println("小于100")
 	default:
 		fmt.Println("默认输出")
 
