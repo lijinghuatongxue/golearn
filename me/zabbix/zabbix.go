@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-api, err := zabbix.NewAPI("http://zabbix.geekerland.net/api_jsonrpc.php", "Admin", "Swl19960706@.@")
+api, err := zabbix.NewAPI("http://zabbix.geekerland.net/api_jsonrpc.php", "Admin", "***")
 if err != nil {
 fmt.Println(err)
 return
