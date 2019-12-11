@@ -11,7 +11,8 @@ type Toptracks struct {
 	Id        string `json:"id"`
 	Firstname string  `json:"firstname"`
 	Lastname  string   `json:"lastname"`
-	Address   []Address_info
+	//Address   []Address_info
+	Address   Address_info `json:"address"`
 }
 
 type Address_info struct {
@@ -39,6 +40,7 @@ func get_content() {
 //	var data interface{} // TopTracks
 	json.Unmarshal(body, &data)
 	fmt.Printf("Results: %v\n", data)
+	fmt.Println(data.Address.)
 	os.Exit(0)
 }
 
