@@ -1,0 +1,356 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+type OpenvpnServerHeader struct {
+	LabelColumns []string
+	Metrics      []OpenvpnServerHeaderField
+}
+
+type OpenvpnServerHeaderField struct {
+	Column    string
+	Desc      *prometheus.Desc
+	ValueType prometheus.ValueType
+}
+
+var (
+	// Metrics exported both for client and server statistics.
+	openvpn_nxUpDesc = prometheus.NewDesc(
+		prometheus.BuildFQName("openvpn_nx", "", "up"),
+		"Whether scraping OpenVPN's metrics was successful.",
+		[]string{"status_path"}, nil)
+	openvpn_nxStatusUpdateTimeDesc = prometheus.NewDesc(
+		prometheus.BuildFQName("openvpn_nx", "", "status_update_time_seconds"),
+		"UNIX timestamp at which the OpenVPN statistics were updated.",
+		[]string{"status_path"}, nil)
+
+	// Metrics specific to OpenVPN servers.
+	openvpn_nxConnectedClientsDesc = prometheus.NewDesc(
+		prometheus.BuildFQName("openvpn_nx", "", "openvpn_nx_server_connected_clients"),
+		"Number Of Connected Clients", nil, nil)
+
+	openvpn_nxServerHeaders = map[string]OpenvpnServerHeader{
+		"CLIENT_LIST": {
+			LabelColumns: []string{
+				"Common Name",
+				"Connected Since (time_t)",
+				"Real Address",
+				"Virtual Address",
+				"Username",
+			},
+			Metrics: []OpenvpnServerHeaderField{
+				{
+					Column: "Bytes Received",
+					Desc: prometheus.NewDesc(
+						prometheus.BuildFQName("openvpn_nx", "server", "client_received_bytes_total"),
+						"Amount of data received over a connection on the VPN server, in bytes.",
+						[]string{"status_path", "common_name", "connection_time", "real_address", "virtual_address", "username"}, nil),
+					ValueType: prometheus.CounterValue,
+				},
+				{
+					Column: "Bytes Sent",
+					Desc: prometheus.NewDesc(
+						prometheus.BuildFQName("openvpn_nx", "server", "client_sent_bytes_total"),
+						"Amount of data sent over a connection on the VPN server, in bytes.",
+						[]string{"status_path", "common_name", "connection_time", "real_address", "virtual_address", "username"}, nil),
+					ValueType: prometheus.CounterValue,
+				},
+			},
+		},
+		"ROUTING_TABLE": {
+			LabelColumns: []string{
+				"Common Name",
+				"Real Address",
+				"Virtual Address",
+			},
+			Metrics: []OpenvpnServerHeaderField{
+				{
+					Column: "Last Ref (time_t)",
+					Desc: prometheus.NewDesc(
+						prometheus.BuildFQName("openvpn_nx", "server", "route_last_reference_time_seconds"),
+						"Time at which a route was last referenced, in seconds.",
+						[]string{"status_path", "common_name", "real_address", "virtual_address"}, nil),
+					ValueType: prometheus.GaugeValue,
+				},
+			},
+		},
+	}
+
+	// Metrics specific to OpenVPN clients.
+	openvpn_nxClientDescs = map[string]*prometheus.Desc{
+		"TUN/TAP read bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "tun_tap_read_bytes_total"),
+			"Total amount of TUN/TAP traffic read, in bytes.",
+			[]string{"status_path"}, nil),
+		"TUN/TAP write bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "tun_tap_write_bytes_total"),
+			"Total amount of TUN/TAP traffic written, in bytes.",
+			[]string{"status_path"}, nil),
+		"TCP/UDP read bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "tcp_udp_read_bytes_total"),
+			"Total amount of TCP/UDP traffic read, in bytes.",
+			[]string{"status_path"}, nil),
+		"TCP/UDP write bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "tcp_udp_write_bytes_total"),
+			"Total amount of TCP/UDP traffic written, in bytes.",
+			[]string{"status_path"}, nil),
+		"Auth read bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "auth_read_bytes_total"),
+			"Total amount of authentication traffic read, in bytes.",
+			[]string{"status_path"}, nil),
+		"pre-compress bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "pre_compress_bytes_total"),
+			"Total amount of data before compression, in bytes.",
+			[]string{"status_path"}, nil),
+		"post-compress bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "post_compress_bytes_total"),
+			"Total amount of data after compression, in bytes.",
+			[]string{"status_path"}, nil),
+		"pre-decompress bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "pre_decompress_bytes_total"),
+			"Total amount of data before decompression, in bytes.",
+			[]string{"status_path"}, nil),
+		"post-decompress bytes": prometheus.NewDesc(
+			prometheus.BuildFQName("openvpn_nx", "client", "post_decompress_bytes_total"),
+			"Total amount of data after decompression, in bytes.",
+			[]string{"status_path"}, nil),
+	}
+)
+
+// Converts OpenVPN status information into Prometheus metrics. This
+// function automatically detects whether the file contains server or
+// client metrics. For server metrics, it also distinguishes between the
+// version 2 and 3 file formats.
+func CollectStatusFromReader(statusPath string, file io.Reader, ch chan<- prometheus.Metric) error {
+	reader := bufio.NewReader(file)
+	buf, _ := reader.Peek(18)
+	if bytes.HasPrefix(buf, []byte("TITLE,")) {
+		// Server statistics, using format version 2.
+		return CollectServerStatusFromReader(statusPath, reader, ch, ",")
+	} else if bytes.HasPrefix(buf, []byte("TITLE\t")) {
+		// Server statistics, using format version 3. The only
+		// difference compared to version 2 is that it uses tabs
+		// instead of spaces.
+		return CollectServerStatusFromReader(statusPath, reader, ch, "\t")
+	} else if bytes.HasPrefix(buf, []byte("OpenVPN STATISTICS")) {
+		// Client statistics.
+		return CollectClientStatusFromReader(statusPath, reader, ch)
+	} else {
+		return fmt.Errorf("unexpected file contents: %q", buf)
+	}
+}
+
+// Converts OpenVPN server status information into Prometheus metrics.
+func CollectServerStatusFromReader(statusPath string, file io.Reader, ch chan<- prometheus.Metric, separator string) error {
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+	headersFound := map[string][]string{}
+	// counter of connected client
+	numberConnectedClient := 0
+
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), separator)
+		if fields[0] == "END" && len(fields) == 1 {
+			// Stats footer.
+		} else if fields[0] == "GLOBAL_STATS" {
+			// Global server statistics.
+		} else if fields[0] == "HEADER" && len(fields) > 2 {
+			// Column names for CLIENT_LIST and ROUTING_TABLE.
+			headersFound[fields[1]] = fields[2:]
+		} else if fields[0] == "TIME" && len(fields) == 3 {
+			// Time at which the statistics were updated.
+			timeStartStats, err := strconv.ParseFloat(fields[2], 64)
+			if err != nil {
+				return err
+			}
+			ch <- prometheus.MustNewConstMetric(
+				openvpn_nxStatusUpdateTimeDesc,
+				prometheus.GaugeValue,
+				timeStartStats,
+				statusPath)
+		} else if fields[0] == "TITLE" && len(fields) == 2 {
+			// OpenVPN version number.
+		} else if header, ok := openvpn_nxServerHeaders[fields[0]]; ok {
+			if fields[0] == "CLIENT_LIST"{
+				numberConnectedClient ++
+			}
+			// Entry that depends on a preceding HEADERS directive.
+			columnNames, ok := headersFound[fields[0]]
+			if !ok {
+				return fmt.Errorf("%s should be preceded by HEADERS", fields[0])
+			}
+			if len(fields) != len(columnNames)+1 {
+				return fmt.Errorf("HEADER for %s describes a different number of columns", fields[0])
+			}
+
+			// Store entry values in a map indexed by column name.
+			columnValues := map[string]string{}
+			for _, column := range header.LabelColumns {
+				columnValues[column] = ""
+			}
+			for i, column := range columnNames {
+				columnValues[column] = fields[i+1]
+			}
+
+			// Extract columns that should act as entry labels.
+			labels := []string{statusPath}
+			for _, column := range header.LabelColumns {
+				labels = append(labels, columnValues[column])
+			}
+
+			// Export relevant columns as individual metrics.
+			for _, metric := range header.Metrics {
+				if columnValue, ok := columnValues[metric.Column]; ok {
+					value, err := strconv.ParseFloat(columnValue, 64)
+					if err != nil {
+						return err
+					}
+					ch <- prometheus.MustNewConstMetric(
+						metric.Desc,
+						metric.ValueType,
+						value,
+						labels...)
+				}
+			}
+		} else {
+			return fmt.Errorf("unsupported key: %q", fields[0])
+		}
+	}
+	// add the number of connected client
+	ch <- prometheus.MustNewConstMetric(
+		openvpn_nxConnectedClientsDesc,
+		prometheus.GaugeValue,
+		float64(numberConnectedClient))
+	return scanner.Err()
+}
+
+// Converts OpenVPN client status information into Prometheus metrics.
+func CollectClientStatusFromReader(statusPath string, file io.Reader, ch chan<- prometheus.Metric) error {
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), ",")
+		if fields[0] == "END" && len(fields) == 1 {
+			// Stats footer.
+		} else if fields[0] == "OpenVPN STATISTICS" && len(fields) == 1 {
+			// Stats header.
+		} else if fields[0] == "Updated" && len(fields) == 2 {
+			// Time at which the statistics were updated.
+			location, _ := time.LoadLocation("Local")
+			timeParser, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", fields[1], location)
+			if err != nil {
+				return err
+			}
+			ch <- prometheus.MustNewConstMetric(
+				openvpn_nxStatusUpdateTimeDesc,
+				prometheus.GaugeValue,
+				float64(timeParser.Unix()),
+				statusPath)
+		} else if desc, ok := openvpn_nxClientDescs[fields[0]]; ok && len(fields) == 2 {
+			// Traffic counters.
+			value, err := strconv.ParseFloat(fields[1], 64)
+			if err != nil {
+				return err
+			}
+			ch <- prometheus.MustNewConstMetric(
+				desc,
+				prometheus.CounterValue,
+				value,
+				statusPath)
+		} else {
+			return fmt.Errorf("unsupported key: %q", fields[0])
+		}
+	}
+	return scanner.Err()
+}
+
+func CollectStatusFromFile(statusPath string, ch chan<- prometheus.Metric) error {
+	conn, err := os.Open(statusPath)
+	defer conn.Close()
+	if err != nil {
+		return err
+	}
+	return CollectStatusFromReader(statusPath, conn, ch)
+}
+
+type OpenVPNExporter struct {
+	statusPaths []string
+}
+
+func NewOpenVPNExporter(statusPaths []string) (*OpenVPNExporter, error) {
+	return &OpenVPNExporter{
+		statusPaths: statusPaths,
+	}, nil
+}
+
+func (e *OpenVPNExporter) Describe(ch chan<- *prometheus.Desc) {
+	ch <- openvpn_nxUpDesc
+}
+
+func (e *OpenVPNExporter) Collect(ch chan<- prometheus.Metric) {
+	for _, statusPath := range e.statusPaths {
+		err := CollectStatusFromFile(statusPath, ch)
+		if err == nil {
+			ch <- prometheus.MustNewConstMetric(
+				openvpn_nxUpDesc,
+				prometheus.GaugeValue,
+				1.0,
+				statusPath)
+		} else {
+			log.Printf("Failed to scrape showq socket: %s", err)
+			ch <- prometheus.MustNewConstMetric(
+				openvpn_nxUpDesc,
+				prometheus.GaugeValue,
+				0.0,
+				statusPath)
+		}
+	}
+}
+
+func main() {
+	var (
+		listenAddress      = flag.String("web.listen-address", ":9176", "Address to listen on for web interface and telemetry.")
+		metricsPath        = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		openvpn_nxStatusPaths = flag.String("openvpn_nx.status_paths", "examples/client.status,examples/server2.status,examples/server3.status", "Paths at which OpenVPN places its status files.")
+	)
+	flag.Parse()
+
+	log.Printf("Starting OpenVPN Exporter\n")
+	log.Printf("Listen address: %v\n", *listenAddress)
+	log.Printf("Metrics path: %v\n", *metricsPath)
+	log.Printf("openvpn_nx.status_path: %v\n", *openvpn_nxStatusPaths)
+
+	exporter, err := NewOpenVPNExporter(strings.Split(*openvpn_nxStatusPaths, ","))
+	if err != nil {
+		panic(err)
+	}
+	prometheus.MustRegister(exporter)
+
+	http.Handle(*metricsPath, promhttp.Handler())
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			<html>
+			<head><title>OpenVPN Exporter</title></head>
+			<body>
+			<h1>OpenVPN Exporter</h1>
+			<p><a href='` + *metricsPath + `'>Metrics</a></p>
+			</body>
+			</html>`))
+	})
+	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+}
