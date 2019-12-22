@@ -87,7 +87,7 @@ func (r *Runner) run() error {
 // gotInterrupt verifies if the interrupt signal has been issued.
 func (r *Runner) gotInterrupt() bool {
 	select {
-	// Signaled when an interrupt event is sent.
+	// Signaled when an interrupt event is sent.lse
 	case <-r.interrupt:
 		// Stop receiving any further signals.
 		signal.Stop(r.interrupt)
