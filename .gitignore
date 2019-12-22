@@ -11,7 +11,7 @@
 # Folders
 _obj
 _test
-./me2
+./me*
 #  Architecture specific extensions/prefixes
 *.[568vq]
 [568vq].out
