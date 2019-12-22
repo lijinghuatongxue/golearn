@@ -2,6 +2,7 @@ package main
 
 import "fmt"
 
+
 func main()  {
 i := 0
 for { //since there are no checks, this is an infinite loop
